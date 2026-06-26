@@ -232,7 +232,7 @@ final class GlyphHUDView: NSView {
         ctx.saveGState()
         ctx.translateBy(x: c.x - box.midX, y: c.y - box.midY)
 
-        // Solid, glowing fill + thin black outline — fades out as the HUD ghosts.
+        // Solid, glowing fill — fades out as the HUD ghosts.
         if visibility > 0.001 {
             ctx.saveGState()
             ctx.setShadow(
@@ -244,12 +244,6 @@ final class GlyphHUDView: NSView {
             ctx.setFillColor(fillColor.withAlphaComponent(visibility).cgColor)
             ctx.fillPath()
             ctx.restoreGState()
-
-            ctx.addPath(path)
-            ctx.setLineWidth(font.pointSize * 0.03) // matches the old strokeWidth: -3
-            ctx.setStrokeColor(NSColor.black.withAlphaComponent(0.85 * visibility).cgColor)
-            ctx.setLineJoin(.round)
-            ctx.strokePath()
         }
 
         // Dashed light-grey ghost outline — fades in as the fill fades out.
