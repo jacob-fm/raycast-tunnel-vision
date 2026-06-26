@@ -2,6 +2,8 @@ import {
   Action,
   ActionPanel,
   Form,
+  Icon,
+  LocalStorage,
   closeMainWindow,
   environment,
   popToRoot,
@@ -9,7 +11,7 @@ import {
   showToast,
   Toast,
 } from "@raycast/api";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { spawn } from "child_process";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
@@ -17,6 +19,18 @@ import { TIME_UP_EFFECTS, disabledEffects } from "./effects";
 
 const PID_FILE = join(environment.supportPath, "overlay.pid");
 const OVERLAY_BINARY = join(environment.assetsPath, "tunnelvision-overlay");
+
+// Key under which the last-used form values are persisted so the command can
+// reopen pre-filled with whatever you ran last.
+const LAST_VALUES_KEY = "last-form-values";
+
+interface StoredValues {
+  goal: string;
+  hours: string;
+  minutes: string;
+  seconds: string;
+  effects: string[];
+}
 
 // Inactivity threshold (seconds the cursor can sit still near the HUD before it
 // snaps back into view). Surfaced here so we can tune it easily later.
@@ -82,11 +96,32 @@ export default function Command() {
   const [minutesError, setMinutesError] = useState<string | undefined>();
   const [secondsError, setSecondsError] = useState<string | undefined>();
 
-  // Raw timer field values, tracked so the time's-up effects can be greyed out
-  // until an actual countdown is entered (without a timer they never fire).
+  // All fields are controlled so they can be pre-filled with the last-used values
+  // loaded from LocalStorage (and so the timer drives the effect availability).
+  const [goal, setGoal] = useState("");
   const [hours, setHours] = useState("");
   const [minutes, setMinutes] = useState("");
   const [seconds, setSeconds] = useState("");
+
+  // Restore the last-used values when the command opens.
+  useEffect(() => {
+    (async () => {
+      const raw = await LocalStorage.getItem<string>(LAST_VALUES_KEY);
+      if (!raw) return;
+      try {
+        const stored = JSON.parse(raw) as Partial<StoredValues>;
+        setGoal(stored.goal ?? "");
+        setHours(stored.hours ?? "");
+        setMinutes(stored.minutes ?? "");
+        setSeconds(stored.seconds ?? "");
+        setEnabled(
+          Object.fromEntries((stored.effects ?? []).map((id) => [id, true])),
+        );
+      } catch {
+        // Ignore corrupt storage and start blank.
+      }
+    })();
+  }, []);
   const hasTimer =
     parseTimePart(hours) * 3600 +
       parseTimePart(minutes) * 60 +
@@ -97,6 +132,17 @@ export default function Command() {
     TIME_UP_EFFECTS.filter((e) => enabled[e.id]).map((e) => e.id),
   );
   const incompatible = disabledEffects(selected);
+
+  // Reset every field back to empty.
+  function clearFields() {
+    setGoal("");
+    setHours("");
+    setMinutes("");
+    setSeconds("");
+    setEnabled({});
+    setMinutesError(undefined);
+    setSecondsError(undefined);
+  }
 
   // Why an effect is unavailable (undefined = available). A timer is required;
   // beyond that, an effect can be blocked by an incompatible selection.
@@ -175,6 +221,16 @@ export default function Command() {
       writeFileSync(PID_FILE, String(child.pid));
     }
 
+    // Remember these values so the command reopens pre-filled next time.
+    const toStore: StoredValues = {
+      goal,
+      hours: values.hours,
+      minutes: values.minutes,
+      seconds: values.seconds,
+      effects: activeEffects,
+    };
+    await LocalStorage.setItem(LAST_VALUES_KEY, JSON.stringify(toStore));
+
     await closeMainWindow({ clearRootSearch: true });
     await showHUD(
       seconds > 0
@@ -192,6 +248,12 @@ export default function Command() {
             title="Start Tunnel Vision"
             onSubmit={handleSubmit}
           />
+          <Action
+            title="Clear All Fields"
+            icon={Icon.Trash}
+            shortcut={{ modifiers: ["cmd", "shift"], key: "x" }}
+            onAction={clearFields}
+          />
         </ActionPanel>
       }
     >
@@ -200,16 +262,20 @@ export default function Command() {
         title="Goal"
         placeholder="What are you locking in on?"
         autoFocus
+        value={goal}
+        onChange={setGoal}
       />
       <Form.TextField
         id="hours"
         title="Timer"
         placeholder="Hours"
+        value={hours}
         onChange={setHours}
       />
       <Form.TextField
         id="minutes"
         placeholder="Minutes (0–59)"
+        value={minutes}
         error={minutesError}
         onChange={(value) => {
           setMinutes(value);
@@ -219,6 +285,7 @@ export default function Command() {
       <Form.TextField
         id="seconds"
         placeholder="Seconds (0–59)"
+        value={seconds}
         error={secondsError}
         onChange={(value) => {
           setSeconds(value);
