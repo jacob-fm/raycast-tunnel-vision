@@ -254,7 +254,7 @@ final class GlyphHUDView: NSView {
             ctx.setLineDash(phase: 0, lengths: [dash, dash * 0.7])
             ctx.setLineWidth(max(1, font.pointSize * 0.02))
             ctx.setLineJoin(.round)
-            ctx.setStrokeColor(NSColor(white: 0.82, alpha: ghost).cgColor)
+            ctx.setStrokeColor(NSColor(white: 0.82, alpha: ghost * 0.5).cgColor)
             ctx.strokePath()
         }
 
