@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+
+# Raycast
+.raycast/
+raycast-env.d.ts
+
+# Compiled Swift overlay binary (rebuilt via `npm run build:overlay`)
+assets/tunnelvision-overlay
+*.dSYM/
+
+# Logs & debug
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Caches
+.cache/
+.eslintcache
+*.tsbuildinfo
+
+# Environment / local secrets
+.env
+.env.local
+.env.*.local
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
