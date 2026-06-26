@@ -5,7 +5,6 @@ import {
   Icon,
   LocalStorage,
   closeMainWindow,
-  environment,
   popToRoot,
   showHUD,
   showToast,
@@ -13,26 +12,19 @@ import {
 } from "@raycast/api";
 import { useEffect, useState } from "react";
 import { spawn } from "child_process";
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "fs";
-import { join } from "path";
+import { chmodSync, existsSync, writeFileSync } from "fs";
 import { TIME_UP_EFFECTS, disabledEffects } from "./effects";
-
-const PID_FILE = join(environment.supportPath, "overlay.pid");
-const PLACE_PID_FILE = join(environment.supportPath, "placement.pid");
-const PLACEMENT_FILE = join(environment.supportPath, "placement.json");
-const OVERLAY_BINARY = join(environment.assetsPath, "tunnelvision-overlay");
-
-// Key under which the last-used form values are persisted so the command can
-// reopen pre-filled with whatever you ran last.
-const LAST_VALUES_KEY = "last-form-values";
-
-interface StoredValues {
-  goal: string;
-  hours: string;
-  minutes: string;
-  seconds: string;
-  effects: string[];
-}
+import {
+  LAST_VALUES_KEY,
+  OVERLAY_BINARY,
+  PID_FILE,
+  StoredValues,
+  launchPlacementMode,
+  parseTimePart,
+  readPlacementArg,
+  stopExistingOverlay,
+  stopPlacementOverlay,
+} from "./overlay";
 
 // Inactivity threshold (seconds the cursor can sit still near the HUD before it
 // snaps back into view). Surfaced here so we can tune it easily later.
@@ -46,12 +38,6 @@ interface FormValues {
   hours: string;
   minutes: string;
   seconds: string;
-}
-
-// Parse a single timer field into a non-negative integer (blank/garbage → 0).
-function parseTimePart(value: string): number {
-  const n = parseInt(value, 10);
-  return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
 // Validate a timer field, returning an error message (or undefined when valid).
@@ -71,50 +57,6 @@ function formatDuration(totalSeconds: number): string {
   const m = Math.floor((totalSeconds % 3600) / 60);
   const s = totalSeconds % 60;
   return [h && `${h}h`, m && `${m}m`, s && `${s}s`].filter(Boolean).join(" ");
-}
-
-// Best-effort SIGTERM of the process whose pid is recorded in `pidFile`.
-function killByPidFile(pidFile: string) {
-  try {
-    if (!existsSync(pidFile)) return;
-    const pid = parseInt(readFileSync(pidFile, "utf8").trim(), 10);
-    if (pid > 0) {
-      try {
-        process.kill(pid, "SIGTERM");
-      } catch {
-        // already gone
-      }
-    }
-  } catch {
-    // ignore — best effort
-  }
-}
-
-function stopExistingOverlay() {
-  killByPidFile(PID_FILE);
-}
-
-function stopPlacementOverlay() {
-  killByPidFile(PLACE_PID_FILE);
-}
-
-// Read the saved placement (if any) as the "centerX,centerY,fontSize" argument the
-// overlay expects, or "" when none has been set.
-function readPlacementArg(): string {
-  try {
-    if (!existsSync(PLACEMENT_FILE)) return "";
-    const p = JSON.parse(readFileSync(PLACEMENT_FILE, "utf8"));
-    if (
-      typeof p?.centerX === "number" &&
-      typeof p?.centerY === "number" &&
-      typeof p?.fontSize === "number"
-    ) {
-      return `${p.centerX},${p.centerY},${p.fontSize}`;
-    }
-  } catch {
-    // ignore corrupt/missing placement
-  }
-  return "";
 }
 
 export default function Command() {
@@ -198,37 +140,22 @@ export default function Command() {
   // so we save the in-progress draft (restored when you reopen this command) and
   // close the Raycast window.
   async function handleConfigurePlacement() {
-    if (!existsSync(OVERLAY_BINARY)) {
-      await showToast({
-        style: Toast.Style.Failure,
-        title: "Overlay not built",
-        message: "Run `npm run build:overlay` to compile the helper.",
-      });
-      return;
-    }
-
     await LocalStorage.setItem(LAST_VALUES_KEY, JSON.stringify(currentDraft()));
-    stopPlacementOverlay(); // replace any previous placement window
-
-    try {
-      chmodSync(OVERLAY_BINARY, 0o755);
-    } catch {
-      // permission bit is usually already set
-    }
 
     const sampleSeconds =
       parseTimePart(hours) * 3600 +
       parseTimePart(minutes) * 60 +
       parseTimePart(seconds);
 
-    const child = spawn(
-      OVERLAY_BINARY,
-      ["place", PLACEMENT_FILE, goal.trim() || "Focus", String(sampleSeconds)],
-      { detached: true, stdio: "ignore" },
-    );
-    child.unref();
-    if (child.pid) {
-      writeFileSync(PLACE_PID_FILE, String(child.pid));
+    try {
+      launchPlacementMode(goal, sampleSeconds);
+    } catch {
+      await showToast({
+        style: Toast.Style.Failure,
+        title: "Overlay not built",
+        message: "Run `npm run build:overlay` to compile the helper.",
+      });
+      return;
     }
 
     await closeMainWindow({ clearRootSearch: true });
