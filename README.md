@@ -6,23 +6,37 @@ A Raycast extension that helps you lock onto a single goal. When you start a ses
 
 - **Start Tunnel Vision** — enter a goal and an optional timer (in minutes). A neon-green HUD appears near the top-center of your screen showing `Goal · MM:SS`.
 - **Stop Tunnel Vision** — dismisses the HUD.
-- **Smart transparency** — the HUD fades to fully transparent *only while your cursor is near it and actively moving*, so you can interact with whatever is underneath. If the cursor goes still for more than 0.5s (tunable), the HUD snaps back to full opacity even while you hover.
+- **Smart transparency** — the HUD fades to fully transparent _only while your cursor is near it and actively moving_, so you can interact with whatever is underneath. If the cursor goes still for more than 0.5s (tunable), the HUD snaps back to full opacity even while you hover.
+- **Time's-up effects** — opt into one or more visual effects that fire when the countdown reaches zero:
+  - **Flash the text red** — fades the HUD from neon green to alarm red.
+  - **Flash the text blue** — fades the HUD from neon green to electric blue. (Incompatible with red.)
+  - **Zoom to fill the screen** — glides the text to screen center and grows it until it spans the full screen width.
+
+  Effects stack: enable as many as you like. When two effects are incompatible (like red and blue), selecting one disables the other in the form.
+
+### Adding a new time's-up effect
+
+Effects live in a small registry so they can be composed. To add one:
+
+1. Append an entry to `TIME_UP_EFFECTS` in `src/effects.ts` (give it a stable `id`, a `label`, a `description`, and any `incompatibleWith` ids). This drives the form checkboxes and the greying-out logic automatically.
+2. Add a matching `case "<id>":` returning a `TimeUpEffect` in `makeEffect(...)` in `overlay/TunnelVisionOverlay.swift`. An effect just mutates the shared `RenderStyle` (color, glow, font size, window frame) by an eased `progress` ramp, so independent effects compose without knowing about each other.
 
 ## How it's built
 
-Raycast extensions render their UI *inside* the Raycast window — they can't draw a free-floating, always-on-top overlay on screen. So Tunnel Vision is two pieces:
+Raycast extensions render their UI _inside_ the Raycast window — they can't draw a free-floating, always-on-top overlay on screen. So Tunnel Vision is two pieces:
 
-| Piece | Location | Role |
-| --- | --- | --- |
-| Raycast extension (TypeScript/React) | `src/` | The control surface: a form to start a session, and a command to stop it. |
+| Piece                                | Location                            | Role                                                                                         |
+| ------------------------------------ | ----------------------------------- | -------------------------------------------------------------------------------------------- |
+| Raycast extension (TypeScript/React) | `src/`                              | The control surface: a form to start a session, and a command to stop it.                    |
 | Native overlay helper (Swift/AppKit) | `overlay/TunnelVisionOverlay.swift` | The borderless, always-on-top, click-through HUD. Compiled to `assets/tunnelvision-overlay`. |
 
-The Start command spawns the compiled Swift binary (passing the goal, duration, and inactivity threshold) and records its PID; the Stop command kills it.
+The Start command spawns the compiled Swift binary (passing the goal, duration, inactivity threshold, hot-zone margin, and the selected time's-up effect ids) and records its PID; the Stop command kills it.
 
 ```
 src/start-tunnel-vision.tsx   Form → launches the overlay
+src/effects.ts                Registry of time's-up effects (shared contract)
 src/stop-tunnel-vision.ts     Kills the overlay
-overlay/TunnelVisionOverlay.swift   The on-screen HUD
+overlay/TunnelVisionOverlay.swift   The on-screen HUD + effect engine
 scripts/generate-icon.js      Generates the extension icon
 assets/extension-icon.png     Extension icon
 ```
