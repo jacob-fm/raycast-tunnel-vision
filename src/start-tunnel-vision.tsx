@@ -18,7 +18,14 @@ import { join } from "path";
 import { TIME_UP_EFFECTS, disabledEffects } from "./effects";
 
 const PID_FILE = join(environment.supportPath, "overlay.pid");
+const PLACE_PID_FILE = join(environment.supportPath, "placement.pid");
+const PLACEMENT_FILE = join(environment.supportPath, "placement.json");
 const OVERLAY_BINARY = join(environment.assetsPath, "tunnelvision-overlay");
+
+// Deeplink the placement-mode overlay opens after the user confirms, to bring them
+// back to this form (pre-filled with the draft saved when they entered place mode).
+const COMMAND_DEEPLINK =
+  "raycast://extensions/jacob/tunnel-vision/start-tunnel-vision";
 
 // Key under which the last-used form values are persisted so the command can
 // reopen pre-filled with whatever you ran last.
@@ -71,10 +78,11 @@ function formatDuration(totalSeconds: number): string {
   return [h && `${h}h`, m && `${m}m`, s && `${s}s`].filter(Boolean).join(" ");
 }
 
-function stopExistingOverlay() {
+// Best-effort SIGTERM of the process whose pid is recorded in `pidFile`.
+function killByPidFile(pidFile: string) {
   try {
-    if (!existsSync(PID_FILE)) return;
-    const pid = parseInt(readFileSync(PID_FILE, "utf8").trim(), 10);
+    if (!existsSync(pidFile)) return;
+    const pid = parseInt(readFileSync(pidFile, "utf8").trim(), 10);
     if (pid > 0) {
       try {
         process.kill(pid, "SIGTERM");
@@ -85,6 +93,33 @@ function stopExistingOverlay() {
   } catch {
     // ignore — best effort
   }
+}
+
+function stopExistingOverlay() {
+  killByPidFile(PID_FILE);
+}
+
+function stopPlacementOverlay() {
+  killByPidFile(PLACE_PID_FILE);
+}
+
+// Read the saved placement (if any) as the "centerX,centerY,fontSize" argument the
+// overlay expects, or "" when none has been set.
+function readPlacementArg(): string {
+  try {
+    if (!existsSync(PLACEMENT_FILE)) return "";
+    const p = JSON.parse(readFileSync(PLACEMENT_FILE, "utf8"));
+    if (
+      typeof p?.centerX === "number" &&
+      typeof p?.centerY === "number" &&
+      typeof p?.fontSize === "number"
+    ) {
+      return `${p.centerX},${p.centerY},${p.fontSize}`;
+    }
+  } catch {
+    // ignore corrupt/missing placement
+  }
+  return "";
 }
 
 export default function Command() {
@@ -152,6 +187,67 @@ export default function Command() {
     return conflict ? `conflicts with “${conflict}”` : undefined;
   }
 
+  // The effects that are toggled on AND currently available.
+  function activeEffectIds(): string[] {
+    return TIME_UP_EFFECTS.filter(
+      (e) => enabled[e.id] && !effectDisabledReason(e.id),
+    ).map((e) => e.id);
+  }
+
+  // Snapshot of the current form, persisted so the command can restore it.
+  function currentDraft(): StoredValues {
+    return { goal, hours, minutes, seconds, effects: activeEffectIds() };
+  }
+
+  // ⌘H: open the on-screen placement preview. This must hand focus to the overlay,
+  // so we save the in-progress draft (restored when the overlay reopens the command
+  // via deeplink) and close the Raycast window.
+  async function handleConfigurePlacement() {
+    if (!existsSync(OVERLAY_BINARY)) {
+      await showToast({
+        style: Toast.Style.Failure,
+        title: "Overlay not built",
+        message: "Run `npm run build:overlay` to compile the helper.",
+      });
+      return;
+    }
+
+    await LocalStorage.setItem(LAST_VALUES_KEY, JSON.stringify(currentDraft()));
+    stopPlacementOverlay(); // replace any previous placement window
+
+    try {
+      chmodSync(OVERLAY_BINARY, 0o755);
+    } catch {
+      // permission bit is usually already set
+    }
+
+    const sampleSeconds =
+      parseTimePart(hours) * 3600 +
+      parseTimePart(minutes) * 60 +
+      parseTimePart(seconds);
+
+    const child = spawn(
+      OVERLAY_BINARY,
+      [
+        "place",
+        PLACEMENT_FILE,
+        goal.trim() || "Focus",
+        String(sampleSeconds),
+        COMMAND_DEEPLINK,
+      ],
+      { detached: true, stdio: "ignore" },
+    );
+    child.unref();
+    if (child.pid) {
+      writeFileSync(PLACE_PID_FILE, String(child.pid));
+    }
+
+    await closeMainWindow({ clearRootSearch: true });
+    await showHUD(
+      "Drag to position · drag the handle to resize · Enter to confirm",
+    );
+  }
+
   async function handleSubmit(values: FormValues) {
     const goal = values.goal.trim();
     if (!goal) {
@@ -178,9 +274,7 @@ export default function Command() {
 
     // Only the effects that are both toggled on and not greyed out (no timer, or
     // suppressed by an incompatible choice) get handed to the overlay.
-    const activeEffects = TIME_UP_EFFECTS.filter(
-      (e) => enabled[e.id] && !effectDisabledReason(e.id),
-    ).map((e) => e.id);
+    const activeEffects = activeEffectIds();
 
     const seconds =
       parseTimePart(values.hours) * 3600 +
@@ -196,8 +290,9 @@ export default function Command() {
       return;
     }
 
-    // Only one HUD at a time.
+    // Only one HUD at a time; also dismiss any open placement preview.
     stopExistingOverlay();
+    stopPlacementOverlay();
 
     try {
       chmodSync(OVERLAY_BINARY, 0o755);
@@ -213,6 +308,7 @@ export default function Command() {
         String(INACTIVITY_THRESHOLD),
         String(NEAR_MARGIN),
         activeEffects.join(","),
+        readPlacementArg(), // "centerX,centerY,fontSize" or "" for default placement
       ],
       { detached: true, stdio: "ignore" },
     );
@@ -247,6 +343,12 @@ export default function Command() {
           <Action.SubmitForm
             title="Start Tunnel Vision"
             onSubmit={handleSubmit}
+          />
+          <Action
+            title="Position & Size on Screen"
+            icon={Icon.Maximize}
+            shortcut={{ modifiers: ["cmd"], key: "h" }}
+            onAction={handleConfigurePlacement}
           />
           <Action
             title="Clear All Fields"
@@ -292,7 +394,7 @@ export default function Command() {
           setSecondsError(timePartError(value, 59));
         }}
       />
-      <Form.Description text="Optional countdown — leave the timer blank for a goal-only HUD. Minutes and seconds must be 0–59. A glowing green HUD pins your goal to the top of the screen until you stop Tunnel Vision." />
+      <Form.Description text="Optional countdown — leave the timer blank for a goal-only HUD. Minutes and seconds must be 0–59. Press ⌘H to drag/resize where the HUD appears on screen. A glowing green HUD pins your goal until you stop Tunnel Vision." />
       <Form.Separator />
       {TIME_UP_EFFECTS.map((effect, index) => {
         const disabledReason = effectDisabledReason(effect.id);

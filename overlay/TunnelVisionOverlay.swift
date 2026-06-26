@@ -31,6 +31,12 @@ let effectIds: [String] =
     arguments.count > 5
     ? arguments[5].split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
     : []
+// Optional "centerX,centerY,fontSize" chosen in place mode; nil = default top-center.
+let placement = arguments.count > 6 ? parsePlacement(arguments[6]) : nil
+
+// Place mode is a distinct subcommand:
+//   tunnelvision-overlay place <outputPath> <goal> <sampleSeconds> <deeplink>
+let isPlaceMode = arguments.count > 1 && arguments[1] == "place"
 
 // MARK: - Small math helpers
 
@@ -199,7 +205,7 @@ final class GlyphHUDView: NSView {
 
     // Compose a single path: the goal on its baseline, with the time stacked above it
     // (when present). Each line is centered horizontally about x = 0.
-    private func glyphPath() -> CGPath? {
+    func combinedPath() -> CGPath? {
         guard let goal = linePath(goalText, font) else { return nil }
 
         let combined = CGMutablePath()
@@ -219,16 +225,12 @@ final class GlyphHUDView: NSView {
         return combined.isEmpty ? nil : combined
     }
 
-    override func draw(_ dirtyRect: NSRect) {
-        guard let ctx = NSGraphicsContext.current?.cgContext, let path = glyphPath() else { return }
-
-        // Center the glyph path within the view.
+    // Render `path` so its bounding box is centered on `c`, applying the current fill,
+    // glow, outline and dashed-ghost styling. Shared by the HUD and the placement view.
+    func drawGlyphs(_ path: CGPath, centeredAt c: CGPoint, in ctx: CGContext) {
         let box = path.boundingBoxOfPath
         ctx.saveGState()
-        ctx.translateBy(
-            x: (bounds.width - box.width) / 2 - box.minX,
-            y: (bounds.height - box.height) / 2 - box.minY
-        )
+        ctx.translateBy(x: c.x - box.midX, y: c.y - box.midY)
 
         // Solid, glowing fill + thin black outline — fades out as the HUD ghosts.
         if visibility > 0.001 {
@@ -264,6 +266,225 @@ final class GlyphHUDView: NSView {
 
         ctx.restoreGState()
     }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let ctx = NSGraphicsContext.current?.cgContext, let path = combinedPath() else { return }
+        drawGlyphs(path, centeredAt: CGPoint(x: bounds.midX, y: bounds.midY), in: ctx)
+    }
+}
+
+// The on-screen size of the HUD text (both lines) at a given goal font size. Used to
+// frame the HUD around a chosen center and to lay out the placement-mode handles.
+func hudContentSize(goal: String, timeText: String?, fontSize: CGFloat) -> CGSize {
+    let goalFont = tunnelVisionFont(ofSize: fontSize)
+    var width = (goal as NSString).size(withAttributes: [.font: goalFont, .kern: 1.5]).width
+    var height = goalFont.ascender - goalFont.descender
+
+    if let timeText {
+        let timeFont = tunnelVisionFont(ofSize: fontSize * GlyphHUDView.timeScale)
+        let timeWidth = (timeText as NSString).size(withAttributes: [.font: timeFont, .kern: 1.5]).width
+        width = max(width, timeWidth)
+        height += fontSize * 0.18 + (timeFont.ascender - timeFont.descender) // gap + time line
+    }
+    return CGSize(width: width, height: height)
+}
+
+// MARK: - Placement (drag to position, resize to scale the text)
+
+struct Placement {
+    var centerX: CGFloat
+    var centerY: CGFloat
+    var fontSize: CGFloat
+}
+
+// Parse the "centerX,centerY,fontSize" argument the form passes to normal mode.
+func parsePlacement(_ s: String) -> Placement? {
+    let parts = s.split(separator: ",").compactMap { Double($0) }
+    guard parts.count == 3 else { return nil }
+    return Placement(centerX: CGFloat(parts[0]), centerY: CGFloat(parts[1]), fontSize: CGFloat(parts[2]))
+}
+
+// Load a previously saved placement so re-entering place mode resumes where you left off.
+func loadPlacementFile(_ path: String) -> Placement? {
+    guard
+        let data = FileManager.default.contents(atPath: path),
+        let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        let cx = obj["centerX"] as? Double,
+        let cy = obj["centerY"] as? Double,
+        let f = obj["fontSize"] as? Double
+    else { return nil }
+    return Placement(centerX: CGFloat(cx), centerY: CGFloat(cy), fontSize: CGFloat(f))
+}
+
+// A borderless window that can still take keyboard focus (so place mode can read
+// Enter/Esc and receive mouse drags).
+final class KeyableWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+}
+
+// Full-screen interactive view used in place mode: drag the body to move the HUD, drag
+// the corner handle to scale the text, Enter to confirm, Esc to cancel.
+final class PlacementView: NSView {
+    var center = NSPoint.zero
+    var fontSize: CGFloat = 30 { didSet { hud.font = tunnelVisionFont(ofSize: fontSize) } }
+    var onConfirm: (() -> Void)?
+    var onCancel: (() -> Void)?
+
+    private let hud = GlyphHUDView(frame: .zero) // used purely as a drawing helper
+
+    init(frame: NSRect, goal: String, timeText: String?) {
+        super.init(frame: frame)
+        hud.goalText = goal
+        hud.timeText = timeText
+        hud.fillColor = NSColor(calibratedRed: 0.36, green: 1.0, blue: 0.20, alpha: 1.0)
+        hud.glowColor = NSColor(calibratedRed: 0.20, green: 1.0, blue: 0.15, alpha: 0.95)
+        hud.glowRadius = 16
+        hud.visibility = 1
+        hud.font = tunnelVisionFont(ofSize: fontSize)
+    }
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override var isFlipped: Bool { false }
+    override var acceptsFirstResponder: Bool { true }
+
+    private func boxRect() -> NSRect {
+        let s = hudContentSize(goal: hud.goalText, timeText: hud.timeText, fontSize: fontSize)
+        return NSRect(x: center.x - s.width / 2, y: center.y - s.height / 2, width: s.width, height: s.height)
+            .insetBy(dx: -18, dy: -18)
+    }
+    private func handleRect() -> NSRect {
+        let b = boxRect()
+        let size: CGFloat = 18
+        return NSRect(x: b.maxX - size / 2, y: b.minY - size / 2, width: size, height: size)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+
+        // Dim the rest of the screen so the preview reads clearly.
+        NSColor.black.withAlphaComponent(0.20).setFill()
+        bounds.fill()
+
+        if let path = hud.combinedPath() {
+            hud.drawGlyphs(path, centeredAt: center, in: ctx)
+        }
+
+        // Dashed selection border + a round resize handle at the bottom-right corner.
+        let border = NSBezierPath(roundedRect: boxRect(), xRadius: 10, yRadius: 10)
+        border.lineWidth = 1.5
+        border.setLineDash([6, 4], count: 2, phase: 0)
+        NSColor.white.withAlphaComponent(0.7).setStroke()
+        border.stroke()
+
+        NSColor.white.withAlphaComponent(0.95).setFill()
+        NSBezierPath(ovalIn: handleRect()).fill()
+
+        // Instructions pinned near the bottom of the screen.
+        let hint = "Drag to move   ·   drag the handle to resize   ·   Enter to confirm   ·   Esc to cancel"
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 13, weight: .medium),
+            .foregroundColor: NSColor.white.withAlphaComponent(0.9),
+        ]
+        let hintSize = (hint as NSString).size(withAttributes: attrs)
+        (hint as NSString).draw(at: NSPoint(x: bounds.midX - hintSize.width / 2, y: 44), withAttributes: attrs)
+    }
+
+    private enum DragMode { case idle, moving, resizing }
+    private var dragMode: DragMode = .idle
+    private var dragStart = NSPoint.zero
+    private var startCenter = NSPoint.zero
+    private var startFont: CGFloat = 30
+    private var startDistance: CGFloat = 1
+
+    override func mouseDown(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        dragStart = p
+        startCenter = center
+        startFont = fontSize
+        if handleRect().insetBy(dx: -10, dy: -10).contains(p) {
+            dragMode = .resizing
+            startDistance = max(1, hypot(p.x - center.x, p.y - center.y))
+        } else {
+            dragMode = .moving
+        }
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        switch dragMode {
+        case .moving:
+            center = NSPoint(x: startCenter.x + (p.x - dragStart.x), y: startCenter.y + (p.y - dragStart.y))
+        case .resizing:
+            // Scale the text by how far the cursor is from the (fixed) center vs. the start.
+            let distance = hypot(p.x - center.x, p.y - center.y)
+            fontSize = min(400, max(12, startFont * distance / startDistance))
+        case .idle:
+            break
+        }
+        needsDisplay = true
+    }
+
+    override func mouseUp(with event: NSEvent) { dragMode = .idle }
+
+    override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 36, 76: onConfirm?() // Return / keypad Enter
+        case 53: onCancel?() // Escape
+        default: super.keyDown(with: event)
+        }
+    }
+}
+
+final class PlacementController {
+    let window: KeyableWindow
+    let view: PlacementView
+    let outputPath: String
+    let deeplink: String?
+
+    init(goal: String, timeText: String?, outputPath: String, deeplink: String?) {
+        self.outputPath = outputPath
+        self.deeplink = deeplink
+
+        let screen = NSScreen.main ?? NSScreen.screens.first!
+        let frame = screen.frame
+
+        window = KeyableWindow(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = false
+        window.level = .screenSaver
+        window.ignoresMouseEvents = false // interactive, unlike the live HUD
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        window.isReleasedWhenClosed = false
+
+        view = PlacementView(frame: NSRect(origin: .zero, size: frame.size), goal: goal, timeText: timeText)
+        view.autoresizingMask = [.width, .height]
+        if let existing = loadPlacementFile(outputPath) {
+            view.fontSize = existing.fontSize
+            view.center = NSPoint(x: existing.centerX, y: existing.centerY)
+        } else {
+            view.fontSize = 30
+            view.center = NSPoint(x: frame.midX, y: frame.maxY - 122) // the default HUD spot
+        }
+        view.onConfirm = { [weak self] in self?.confirm() }
+        view.onCancel = { exit(0) }
+        window.contentView = view
+
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(view)
+    }
+
+    private func confirm() {
+        let json = "{\"centerX\":\(view.center.x),\"centerY\":\(view.center.y),\"fontSize\":\(view.fontSize)}"
+        try? json.write(toFile: outputPath, atomically: true, encoding: .utf8)
+        // Reopen the Raycast form so the user can submit with their chosen placement.
+        if let deeplink, let url = URL(string: deeplink) {
+            NSWorkspace.shared.open(url)
+        }
+        exit(0)
+    }
 }
 
 final class OverlayController {
@@ -286,7 +507,7 @@ final class OverlayController {
     private var timeUpProgress: CGFloat = 0 // raw 0 → 1 ramp after the timer ends
     private var tickTimer: Timer?
 
-    init(goal: String, durationSeconds: Double, inactivityThreshold: TimeInterval, nearMargin: CGFloat, effectIds: [String]) {
+    init(goal: String, durationSeconds: Double, inactivityThreshold: TimeInterval, nearMargin: CGFloat, effectIds: [String], placement: Placement?) {
         self.goal = goal
         self.endDate = durationSeconds > 0 ? Date().addingTimeInterval(durationSeconds) : nil
         self.inactivityThreshold = inactivityThreshold
@@ -295,13 +516,30 @@ final class OverlayController {
 
         let screen = NSScreen.main ?? NSScreen.screens.first!
         let visible = screen.frame
-        let width = min(960, visible.width * 0.82)
-        let height: CGFloat = 132 // tall enough for the time line stacked above the goal
-        let originX = visible.midX - width / 2
-        let originY = visible.maxY - height - 56 // 56pt below the top edge
-        let baseFrame = NSRect(x: originX, y: originY, width: width, height: height)
 
-        let baseFontSize: CGFloat = 30
+        let baseFrame: NSRect
+        let baseFontSize: CGFloat
+        if let placement {
+            // Use the user-chosen center + text size from placement mode, framing the
+            // window around the text (with margin for glow and the fade hot zone).
+            baseFontSize = placement.fontSize
+            let content = hudContentSize(
+                goal: goal,
+                timeText: durationSeconds > 0 ? "00:00" : nil,
+                fontSize: placement.fontSize
+            )
+            let w = content.width + 80
+            let h = content.height + 80
+            baseFrame = NSRect(x: placement.centerX - w / 2, y: placement.centerY - h / 2, width: w, height: h)
+        } else {
+            // Default: a fixed strip pinned near the top-center of the screen.
+            let width = min(960, visible.width * 0.82)
+            let height: CGFloat = 132 // tall enough for the time line stacked above the goal
+            let originX = visible.midX - width / 2
+            let originY = visible.maxY - height - 56 // 56pt below the top edge
+            baseFrame = NSRect(x: originX, y: originY, width: width, height: height)
+            baseFontSize = 30
+        }
 
         // Pre-compute the zoom target: a goal font size large enough that the wider of
         // the two stacked lines fills ~92% of the screen width. The time line renders
@@ -435,12 +673,33 @@ final class OverlayController {
 
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory) // no Dock icon, never steals focus
-let controller = OverlayController(
-    goal: goalText,
-    durationSeconds: durationSeconds,
-    inactivityThreshold: inactivityThreshold,
-    nearMargin: nearMargin,
-    effectIds: effectIds
-)
-_ = controller
+
+// Held for the whole program lifetime — otherwise the controller (and its repeating
+// timer / event handlers) would deallocate before app.run() and the HUD would freeze.
+var retainedController: AnyObject?
+
+if isPlaceMode {
+    let outputPath = arguments.count > 2 ? arguments[2] : ""
+    let placeGoal = arguments.count > 3 ? arguments[3] : "Focus"
+    let sampleSeconds = arguments.count > 4 ? (Double(arguments[4]) ?? 0) : 0
+    let deeplink = arguments.count > 5 ? arguments[5] : nil
+    let total = Int(sampleSeconds.rounded())
+    let sampleTime = total > 0 ? String(format: "%02d:%02d", total / 60, total % 60) : nil
+    retainedController = PlacementController(
+        goal: placeGoal.isEmpty ? "Focus" : placeGoal,
+        timeText: sampleTime,
+        outputPath: outputPath,
+        deeplink: deeplink
+    )
+} else {
+    retainedController = OverlayController(
+        goal: goalText,
+        durationSeconds: durationSeconds,
+        inactivityThreshold: inactivityThreshold,
+        nearMargin: nearMargin,
+        effectIds: effectIds,
+        placement: placement
+    )
+}
+_ = retainedController
 app.run()
