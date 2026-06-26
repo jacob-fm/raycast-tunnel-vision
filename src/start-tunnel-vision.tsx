@@ -22,11 +22,6 @@ const PLACE_PID_FILE = join(environment.supportPath, "placement.pid");
 const PLACEMENT_FILE = join(environment.supportPath, "placement.json");
 const OVERLAY_BINARY = join(environment.assetsPath, "tunnelvision-overlay");
 
-// Deeplink the placement-mode overlay opens after the user confirms, to bring them
-// back to this form (pre-filled with the draft saved when they entered place mode).
-const COMMAND_DEEPLINK =
-  "raycast://extensions/jacob/tunnel-vision/start-tunnel-vision";
-
 // Key under which the last-used form values are persisted so the command can
 // reopen pre-filled with whatever you ran last.
 const LAST_VALUES_KEY = "last-form-values";
@@ -200,8 +195,8 @@ export default function Command() {
   }
 
   // ⌘H: open the on-screen placement preview. This must hand focus to the overlay,
-  // so we save the in-progress draft (restored when the overlay reopens the command
-  // via deeplink) and close the Raycast window.
+  // so we save the in-progress draft (restored when you reopen this command) and
+  // close the Raycast window.
   async function handleConfigurePlacement() {
     if (!existsSync(OVERLAY_BINARY)) {
       await showToast({
@@ -228,13 +223,7 @@ export default function Command() {
 
     const child = spawn(
       OVERLAY_BINARY,
-      [
-        "place",
-        PLACEMENT_FILE,
-        goal.trim() || "Focus",
-        String(sampleSeconds),
-        COMMAND_DEEPLINK,
-      ],
+      ["place", PLACEMENT_FILE, goal.trim() || "Focus", String(sampleSeconds)],
       { detached: true, stdio: "ignore" },
     );
     child.unref();
@@ -244,7 +233,7 @@ export default function Command() {
 
     await closeMainWindow({ clearRootSearch: true });
     await showHUD(
-      "Drag to position · drag the handle to resize · Enter to confirm",
+      "Drag to position · drag the handle to resize · Enter to save, then reopen Tunnel Vision",
     );
   }
 
@@ -394,7 +383,7 @@ export default function Command() {
           setSecondsError(timePartError(value, 59));
         }}
       />
-      <Form.Description text="Optional countdown — leave the timer blank for a goal-only HUD. Minutes and seconds must be 0–59. Press ⌘H to drag/resize where the HUD appears on screen. A glowing green HUD pins your goal until you stop Tunnel Vision." />
+      <Form.Description text="Optional countdown — leave the timer blank for a goal-only HUD. Minutes and seconds must be 0–59. Press ⌘H to drag/resize where the HUD appears, then reopen this command to start. A glowing green HUD pins your goal until you stop Tunnel Vision." />
       <Form.Separator />
       {TIME_UP_EFFECTS.map((effect, index) => {
         const disabledReason = effectDisabledReason(effect.id);

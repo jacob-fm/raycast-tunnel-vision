@@ -6,7 +6,7 @@ A Raycast extension that helps you lock onto a single goal. When you start a ses
 
 - **Start Tunnel Vision** — enter a goal and an optional timer via separate hours, minutes, and seconds fields (minutes and seconds must be 0–59; the form shows an error and blocks submission otherwise). A neon-green HUD appears near the top-center of your screen showing `Goal · MM:SS`.
 - **Stop Tunnel Vision** — dismisses the HUD.
-- **Position & size (⌘H)** — from the Start form, press ⌘H to open an on-screen preview of the HUD. **Drag** it to reposition, **drag the bottom-right handle** to scale the text, then press **Enter** to confirm (**Esc** cancels). The form reopens; submit as usual and the HUD launches at the position and size you chose. Your placement is remembered across sessions until you change it again.
+- **Position & size (⌘H)** — from the Start form, press ⌘H to open an on-screen preview of the HUD. **Drag** it to reposition, **drag the bottom-right handle** to scale the text, then press **Enter** to save (**Esc** cancels). Reopen Tunnel Vision (your in-progress form is restored) and start as usual — the HUD launches at the position and size you chose. Your placement is remembered across sessions until you change it again.
 - **Smart transparency** — the HUD's solid text fades out _only while your cursor is near it and actively moving_, so you can interact with whatever is underneath. While faded it leaves a dashed light-grey outline of the text, so your goal stays faintly legible. If the cursor goes still for more than 0.5s (tunable), the HUD snaps back to full opacity even while you hover.
 - **Time's-up effects** — opt into one or more visual effects that fire when the countdown reaches zero:
   - **Flash the text red** — fades the HUD from neon green to alarm red.
@@ -33,7 +33,7 @@ Raycast extensions render their UI _inside_ the Raycast window — they can't dr
 
 The Start command spawns the compiled Swift binary (passing the goal, duration, inactivity threshold, hot-zone margin, the selected time's-up effect ids, and the optional saved placement) and records its PID; the Stop command kills it.
 
-The same binary has a second `place` subcommand for the ⌘H positioning preview: it opens a full-screen, focus-grabbing, interactive window where you drag/resize the HUD. On confirm it writes the chosen `{centerX, centerY, fontSize}` to `placement.json` in the extension's support directory and reopens the form via a Raycast deeplink; the Start command reads that file on submit. Because it needs mouse and keyboard focus, entering place mode closes the Raycast window (the in-progress form draft is saved and restored on reopen).
+The same binary has a second `place` subcommand for the ⌘H positioning preview: it opens a full-screen, focus-grabbing, interactive window where you drag/resize the HUD. On confirm it writes the chosen `{centerX, centerY, fontSize}` to `placement.json` in the extension's support directory; the Start command reads that file on submit. Because it needs mouse and keyboard focus, entering place mode closes the Raycast window (the in-progress form draft is saved to local storage and restored when you reopen the command). It deliberately does **not** try to deeplink back into Raycast — that scheme can't reliably target the right build (regular vs. Beta vs. dev), so you reopen the command yourself.
 
 ```
 src/start-tunnel-vision.tsx   Form → launches the overlay (live HUD or place mode)

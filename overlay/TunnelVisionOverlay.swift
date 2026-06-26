@@ -328,6 +328,7 @@ final class KeyableWindow: NSWindow {
 final class PlacementView: NSView {
     var center = NSPoint.zero
     var fontSize: CGFloat = 30 { didSet { hud.font = tunnelVisionFont(ofSize: fontSize) } }
+    var saved = false // briefly shown after confirming, before the window closes
     var onConfirm: (() -> Void)?
     var onCancel: (() -> Void)?
 
@@ -380,11 +381,16 @@ final class PlacementView: NSView {
         NSColor.white.withAlphaComponent(0.95).setFill()
         NSBezierPath(ovalIn: handleRect()).fill()
 
-        // Instructions pinned near the bottom of the screen.
-        let hint = "Drag to move   ·   drag the handle to resize   ·   Enter to confirm   ·   Esc to cancel"
+        // Instructions (or the post-confirm message) pinned near the bottom of the screen.
+        let hint =
+            saved
+            ? "✓  Placement saved — reopen Tunnel Vision and press Enter to start"
+            : "Drag to move   ·   drag the handle to resize   ·   Enter to confirm   ·   Esc to cancel"
         let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 13, weight: .medium),
-            .foregroundColor: NSColor.white.withAlphaComponent(0.9),
+            .font: NSFont.systemFont(ofSize: 14, weight: saved ? .semibold : .medium),
+            .foregroundColor: saved
+                ? NSColor(calibratedRed: 0.36, green: 1.0, blue: 0.20, alpha: 1.0)
+                : NSColor.white.withAlphaComponent(0.9),
         ]
         let hintSize = (hint as NSString).size(withAttributes: attrs)
         (hint as NSString).draw(at: NSPoint(x: bounds.midX - hintSize.width / 2, y: 44), withAttributes: attrs)
@@ -440,11 +446,9 @@ final class PlacementController {
     let window: KeyableWindow
     let view: PlacementView
     let outputPath: String
-    let deeplink: String?
 
-    init(goal: String, timeText: String?, outputPath: String, deeplink: String?) {
+    init(goal: String, timeText: String?, outputPath: String) {
         self.outputPath = outputPath
-        self.deeplink = deeplink
 
         let screen = NSScreen.main ?? NSScreen.screens.first!
         let frame = screen.frame
@@ -477,13 +481,15 @@ final class PlacementController {
     }
 
     private func confirm() {
+        guard !view.saved else { return } // ignore repeat keypresses while closing
         let json = "{\"centerX\":\(view.center.x),\"centerY\":\(view.center.y),\"fontSize\":\(view.fontSize)}"
         try? json.write(toFile: outputPath, atomically: true, encoding: .utf8)
-        // Reopen the Raycast form so the user can submit with their chosen placement.
-        if let deeplink, let url = URL(string: deeplink) {
-            NSWorkspace.shared.open(url)
-        }
-        exit(0)
+
+        // Briefly confirm on screen, then close. (The user reopens Tunnel Vision to
+        // start — their in-progress form values are restored from local storage.)
+        view.saved = true
+        view.needsDisplay = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { exit(0) }
     }
 }
 
@@ -682,14 +688,12 @@ if isPlaceMode {
     let outputPath = arguments.count > 2 ? arguments[2] : ""
     let placeGoal = arguments.count > 3 ? arguments[3] : "Focus"
     let sampleSeconds = arguments.count > 4 ? (Double(arguments[4]) ?? 0) : 0
-    let deeplink = arguments.count > 5 ? arguments[5] : nil
     let total = Int(sampleSeconds.rounded())
     let sampleTime = total > 0 ? String(format: "%02d:%02d", total / 60, total % 60) : nil
     retainedController = PlacementController(
         goal: placeGoal.isEmpty ? "Focus" : placeGoal,
         timeText: sampleTime,
-        outputPath: outputPath,
-        deeplink: deeplink
+        outputPath: outputPath
     )
 } else {
     retainedController = OverlayController(
