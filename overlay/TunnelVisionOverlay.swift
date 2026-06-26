@@ -147,8 +147,12 @@ func tunnelVisionFont(ofSize size: CGFloat) -> NSFont {
 }
 
 final class GlyphHUDView: NSView {
-    var text = ""
-    var font = tunnelVisionFont(ofSize: 30)
+    // The countdown sits on its own line above the goal at a smaller, secondary size.
+    static let timeScale: CGFloat = 0.7
+
+    var goalText = ""
+    var timeText: String? = nil // nil ⇒ no timer ⇒ goal-only single line
+    var font = tunnelVisionFont(ofSize: 30) // the goal (headline) font
     var fillColor = NSColor.green
     var glowColor = NSColor.green
     var glowRadius: CGFloat = 14
@@ -156,17 +160,28 @@ final class GlyphHUDView: NSView {
 
     private let kern: CGFloat = 1.5
 
-    // Build a single CGPath containing every glyph of `text`, laid out on one line.
-    private func glyphPath() -> CGPath? {
-        guard !text.isEmpty else { return nil }
-        let attributed = NSAttributedString(string: text, attributes: [.font: font, .kern: kern])
+    private var timeFont: NSFont { tunnelVisionFont(ofSize: font.pointSize * Self.timeScale) }
+
+    // Build the glyph outline of a single string at `f`, baseline at the origin, plus
+    // its typographic metrics so callers can stack lines on consistent baselines.
+    private func linePath(
+        _ string: String, _ f: NSFont
+    ) -> (path: CGPath, width: CGFloat, ascent: CGFloat, descent: CGFloat)? {
+        guard !string.isEmpty else { return nil }
+        let attributed = NSAttributedString(string: string, attributes: [.font: f, .kern: kern])
         let line = CTLineCreateWithAttributedString(attributed)
+
+        var ascent: CGFloat = 0
+        var descent: CGFloat = 0
+        var leading: CGFloat = 0
+        let width = CGFloat(CTLineGetTypographicBounds(line, &ascent, &descent, &leading))
+
         let path = CGMutablePath()
         for runAny in CTLineGetGlyphRuns(line) as NSArray {
             let run = runAny as! CTRun
             let attrs = CTRunGetAttributes(run) as NSDictionary
             let runFontValue = attrs[kCTFontAttributeName as String]
-            let runFont = runFontValue != nil ? (runFontValue as! CTFont) : (font as CTFont)
+            let runFont = runFontValue != nil ? (runFontValue as! CTFont) : (f as CTFont)
             let count = CTRunGetGlyphCount(run)
             guard count > 0 else { continue }
             var glyphs = [CGGlyph](repeating: 0, count: count)
@@ -179,7 +194,29 @@ final class GlyphHUDView: NSView {
                 path.addPath(glyph, transform: transform)
             }
         }
-        return path.isEmpty ? nil : path
+        return path.isEmpty ? nil : (path, width, ascent, descent)
+    }
+
+    // Compose a single path: the goal on its baseline, with the time stacked above it
+    // (when present). Each line is centered horizontally about x = 0.
+    private func glyphPath() -> CGPath? {
+        guard let goal = linePath(goalText, font) else { return nil }
+
+        let combined = CGMutablePath()
+        combined.addPath(
+            goal.path, transform: CGAffineTransform(translationX: -goal.width / 2, y: 0)
+        )
+
+        if let timeText, let time = linePath(timeText, timeFont) {
+            let gap = font.pointSize * 0.18
+            let timeBaseline = goal.ascent + gap + time.descent
+            combined.addPath(
+                time.path,
+                transform: CGAffineTransform(translationX: -time.width / 2, y: timeBaseline)
+            )
+        }
+
+        return combined.isEmpty ? nil : combined
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -259,21 +296,27 @@ final class OverlayController {
         let screen = NSScreen.main ?? NSScreen.screens.first!
         let visible = screen.frame
         let width = min(960, visible.width * 0.82)
-        let height: CGFloat = 96
+        let height: CGFloat = 132 // tall enough for the time line stacked above the goal
         let originX = visible.midX - width / 2
         let originY = visible.maxY - height - 56 // 56pt below the top edge
         let baseFrame = NSRect(x: originX, y: originY, width: width, height: height)
 
         let baseFontSize: CGFloat = 30
 
-        // Pre-compute the zoom target: a font size large enough that the final
-        // "time's up" string fills ~92% of the screen width on a single line.
-        let zoomString = durationSeconds > 0 ? "\(goal)   ·   TIME'S UP" : goal
+        // Pre-compute the zoom target: a goal font size large enough that the wider of
+        // the two stacked lines fills ~92% of the screen width. The time line renders
+        // at GlyphHUDView.timeScale, so measure it at that scale to compare fairly.
         let referenceSize: CGFloat = 100
-        let referenceFont = tunnelVisionFont(ofSize: referenceSize)
-        let measured = (zoomString as NSString)
-            .size(withAttributes: [.font: referenceFont, .kern: 1.5]).width
-        let zoomFontSize = measured > 0 ? referenceSize * (visible.width * 0.92 / measured) : referenceSize
+        let goalWidth = (goal as NSString)
+            .size(withAttributes: [.font: tunnelVisionFont(ofSize: referenceSize), .kern: 1.5]).width
+        let timeWidth =
+            durationSeconds > 0
+            ? ("TIME'S UP" as NSString).size(withAttributes: [
+                .font: tunnelVisionFont(ofSize: referenceSize * GlyphHUDView.timeScale), .kern: 1.5,
+            ]).width
+            : 0
+        let widest = max(goalWidth, timeWidth)
+        let zoomFontSize = widest > 0 ? referenceSize * (visible.width * 0.92 / widest) : referenceSize
 
         self.context = EffectContext(
             screen: visible,
@@ -317,9 +360,9 @@ final class OverlayController {
         timeString() == "00:00"
     }
 
-    private func displayString() -> String {
-        guard let t = timeString() else { return goal }
-        return (t == "00:00") ? "\(goal)   ·   TIME'S UP" : "\(goal)   ·   \(t)"
+    private func timeLine() -> String? {
+        guard let t = timeString() else { return nil }
+        return t == "00:00" ? "TIME'S UP" : t
     }
 
     // Compose the base look with every active effect, scaled by the eased ramp.
@@ -346,7 +389,8 @@ final class OverlayController {
             window.setFrame(style.frame, display: true)
         }
 
-        hudView.text = displayString()
+        hudView.goalText = goal
+        hudView.timeText = timeLine()
         hudView.font = tunnelVisionFont(ofSize: style.fontSize)
         hudView.fillColor = style.textColor
         hudView.glowColor = style.glowColor
