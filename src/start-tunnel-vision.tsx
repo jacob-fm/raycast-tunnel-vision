@@ -32,12 +32,21 @@ interface FormValues {
   seconds: string;
 }
 
-// Parse a single timer field into a non-negative integer (blank/garbage → 0),
-// optionally clamped to a maximum (minutes and seconds are capped at 59).
-function parseTimePart(value: string, max = Infinity): number {
+// Parse a single timer field into a non-negative integer (blank/garbage → 0).
+function parseTimePart(value: string): number {
   const n = parseInt(value, 10);
-  if (!Number.isFinite(n) || n <= 0) return 0;
-  return Math.min(n, max);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+// Validate a timer field, returning an error message (or undefined when valid).
+// Blank is allowed (counts as 0); minutes and seconds must fall within 0–max.
+function timePartError(value: string, max: number): string | undefined {
+  const text = value.trim();
+  if (text === "") return undefined;
+  const n = Number(text);
+  if (!Number.isInteger(n) || n < 0) return "Enter a whole number";
+  if (n > max) return `Must be 0–${max}`;
+  return undefined;
 }
 
 // Human-readable summary of a duration for the confirmation HUD, e.g. "1h 25m 30s".
@@ -68,10 +77,34 @@ export default function Command() {
   // Which time's-up effects are toggled on, keyed by effect id.
   const [enabled, setEnabled] = useState<Record<string, boolean>>({});
 
+  // Live validation errors for the minutes/seconds fields. While either is set,
+  // Raycast keeps the form's submit action disabled until it's resolved.
+  const [minutesError, setMinutesError] = useState<string | undefined>();
+  const [secondsError, setSecondsError] = useState<string | undefined>();
+
+  // Raw timer field values, tracked so the time's-up effects can be greyed out
+  // until an actual countdown is entered (without a timer they never fire).
+  const [hours, setHours] = useState("");
+  const [minutes, setMinutes] = useState("");
+  const [seconds, setSeconds] = useState("");
+  const hasTimer =
+    parseTimePart(hours) * 3600 +
+      parseTimePart(minutes) * 60 +
+      parseTimePart(seconds) >
+    0;
+
   const selected = new Set(
     TIME_UP_EFFECTS.filter((e) => enabled[e.id]).map((e) => e.id),
   );
-  const disabled = disabledEffects(selected);
+  const incompatible = disabledEffects(selected);
+
+  // Why an effect is unavailable (undefined = available). A timer is required;
+  // beyond that, an effect can be blocked by an incompatible selection.
+  function effectDisabledReason(id: string): string | undefined {
+    if (!hasTimer) return "set a timer first";
+    const conflict = incompatible.get(id);
+    return conflict ? `conflicts with “${conflict}”` : undefined;
+  }
 
   async function handleSubmit(values: FormValues) {
     const goal = values.goal.trim();
@@ -83,16 +116,30 @@ export default function Command() {
       return;
     }
 
-    // Only the effects that are both toggled on and not greyed out (i.e. not
+    // Backstop in case a value was pasted/submitted without firing onChange.
+    const mErr = timePartError(values.minutes, 59);
+    const sErr = timePartError(values.seconds, 59);
+    if (mErr || sErr) {
+      setMinutesError(mErr);
+      setSecondsError(sErr);
+      await showToast({
+        style: Toast.Style.Failure,
+        title: "Fix the timer",
+        message: "Minutes and seconds must be 0–59",
+      });
+      return;
+    }
+
+    // Only the effects that are both toggled on and not greyed out (no timer, or
     // suppressed by an incompatible choice) get handed to the overlay.
     const activeEffects = TIME_UP_EFFECTS.filter(
-      (e) => enabled[e.id] && !disabled.has(e.id),
+      (e) => enabled[e.id] && !effectDisabledReason(e.id),
     ).map((e) => e.id);
 
     const seconds =
       parseTimePart(values.hours) * 3600 +
-      parseTimePart(values.minutes, 59) * 60 +
-      parseTimePart(values.seconds, 59);
+      parseTimePart(values.minutes) * 60 +
+      parseTimePart(values.seconds);
 
     if (!existsSync(OVERLAY_BINARY)) {
       await showToast({
@@ -154,14 +201,35 @@ export default function Command() {
         placeholder="What are you locking in on?"
         autoFocus
       />
-      <Form.TextField id="hours" title="Timer" placeholder="Hours" />
-      <Form.TextField id="minutes" placeholder="Minutes (0–59)" />
-      <Form.TextField id="seconds" placeholder="Seconds (0–59)" />
-      <Form.Description text="Optional countdown — leave the timer blank for a goal-only HUD. Minutes and seconds clamp to 0–59. A glowing green HUD pins your goal to the top of the screen until you stop Tunnel Vision." />
+      <Form.TextField
+        id="hours"
+        title="Timer"
+        placeholder="Hours"
+        onChange={setHours}
+      />
+      <Form.TextField
+        id="minutes"
+        placeholder="Minutes (0–59)"
+        error={minutesError}
+        onChange={(value) => {
+          setMinutes(value);
+          setMinutesError(timePartError(value, 59));
+        }}
+      />
+      <Form.TextField
+        id="seconds"
+        placeholder="Seconds (0–59)"
+        error={secondsError}
+        onChange={(value) => {
+          setSeconds(value);
+          setSecondsError(timePartError(value, 59));
+        }}
+      />
+      <Form.Description text="Optional countdown — leave the timer blank for a goal-only HUD. Minutes and seconds must be 0–59. A glowing green HUD pins your goal to the top of the screen until you stop Tunnel Vision." />
       <Form.Separator />
       {TIME_UP_EFFECTS.map((effect, index) => {
-        const conflictsWith = disabled.get(effect.id);
-        const isDisabled = conflictsWith !== undefined;
+        const disabledReason = effectDisabledReason(effect.id);
+        const isDisabled = disabledReason !== undefined;
         return (
           <Form.Checkbox
             key={effect.id}
@@ -170,7 +238,7 @@ export default function Command() {
             title={index === 0 ? "When time's up" : ""}
             label={
               isDisabled
-                ? `${effect.label}  —  disabled (conflicts with “${conflictsWith}”)`
+                ? `${effect.label}  —  disabled (${disabledReason})`
                 : effect.label
             }
             info={effect.description}

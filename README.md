@@ -4,7 +4,7 @@ A Raycast extension that helps you lock onto a single goal. When you start a ses
 
 ## What it does
 
-- **Start Tunnel Vision** — enter a goal and an optional timer via separate hours, minutes, and seconds fields (minutes and seconds clamp to 0–59). A neon-green HUD appears near the top-center of your screen showing `Goal · MM:SS`.
+- **Start Tunnel Vision** — enter a goal and an optional timer via separate hours, minutes, and seconds fields (minutes and seconds must be 0–59; the form shows an error and blocks submission otherwise). A neon-green HUD appears near the top-center of your screen showing `Goal · MM:SS`.
 - **Stop Tunnel Vision** — dismisses the HUD.
 - **Smart transparency** — the HUD's solid text fades out _only while your cursor is near it and actively moving_, so you can interact with whatever is underneath. While faded it leaves a dashed light-grey outline of the text, so your goal stays faintly legible. If the cursor goes still for more than 0.5s (tunable), the HUD snaps back to full opacity even while you hover.
 - **Time's-up effects** — opt into one or more visual effects that fire when the countdown reaches zero:
@@ -12,7 +12,7 @@ A Raycast extension that helps you lock onto a single goal. When you start a ses
   - **Flash the text blue** — fades the HUD from neon green to electric blue. (Incompatible with red.)
   - **Zoom to fill the screen** — glides the text to screen center and grows it until it spans the full screen width.
 
-  Effects stack: enable as many as you like. When two effects are incompatible (like red and blue), selecting one disables the other in the form.
+  These require a timer — without a countdown there's no "time's up" moment, so the options are greyed out until you enter one. Effects stack: enable as many as you like. When two effects are incompatible (like red and blue), selecting one disables the other in the form.
 
 ### Adding a new time's-up effect
 

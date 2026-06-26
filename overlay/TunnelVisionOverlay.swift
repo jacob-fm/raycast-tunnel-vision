@@ -139,9 +139,16 @@ func makeEffect(id: String) -> TimeUpEffect? {
 // the cursor reaches for the HUD, a dashed light-grey outline of the same text fades
 // in, so the goal stays faintly legible instead of vanishing entirely.
 
+// The HUD text font. Helvetica Neue Bold, falling back to the heavy
+// monospaced system font if it is somehow unavailable.
+func tunnelVisionFont(ofSize size: CGFloat) -> NSFont {
+    NSFont(name: "HelveticaNeue-Bold", size: size)
+        ?? NSFont.monospacedSystemFont(ofSize: size, weight: .heavy)
+}
+
 final class GlyphHUDView: NSView {
     var text = ""
-    var font = NSFont.monospacedSystemFont(ofSize: 30, weight: .heavy)
+    var font = tunnelVisionFont(ofSize: 30)
     var fillColor = NSColor.green
     var glowColor = NSColor.green
     var glowRadius: CGFloat = 14
@@ -263,7 +270,7 @@ final class OverlayController {
         // "time's up" string fills ~92% of the screen width on a single line.
         let zoomString = durationSeconds > 0 ? "\(goal)   ·   TIME'S UP" : goal
         let referenceSize: CGFloat = 100
-        let referenceFont = NSFont.monospacedSystemFont(ofSize: referenceSize, weight: .heavy)
+        let referenceFont = tunnelVisionFont(ofSize: referenceSize)
         let measured = (zoomString as NSString)
             .size(withAttributes: [.font: referenceFont, .kern: 1.5]).width
         let zoomFontSize = measured > 0 ? referenceSize * (visible.width * 0.92 / measured) : referenceSize
@@ -340,7 +347,7 @@ final class OverlayController {
         }
 
         hudView.text = displayString()
-        hudView.font = NSFont.monospacedSystemFont(ofSize: style.fontSize, weight: .heavy)
+        hudView.font = tunnelVisionFont(ofSize: style.fontSize)
         hudView.fillColor = style.textColor
         hudView.glowColor = style.glowColor
         // Scale the glow with the font so it stays proportional when zoomed.
