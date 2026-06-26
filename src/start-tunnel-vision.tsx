@@ -27,7 +27,25 @@ const NEAR_MARGIN = 90;
 
 interface FormValues {
   goal: string;
+  hours: string;
   minutes: string;
+  seconds: string;
+}
+
+// Parse a single timer field into a non-negative integer (blank/garbage → 0),
+// optionally clamped to a maximum (minutes and seconds are capped at 59).
+function parseTimePart(value: string, max = Infinity): number {
+  const n = parseInt(value, 10);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(n, max);
+}
+
+// Human-readable summary of a duration for the confirmation HUD, e.g. "1h 25m 30s".
+function formatDuration(totalSeconds: number): string {
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
+  return [h && `${h}h`, m && `${m}m`, s && `${s}s`].filter(Boolean).join(" ");
 }
 
 function stopExistingOverlay() {
@@ -71,9 +89,10 @@ export default function Command() {
       (e) => enabled[e.id] && !disabled.has(e.id),
     ).map((e) => e.id);
 
-    const minutes = parseFloat(values.minutes);
     const seconds =
-      Number.isFinite(minutes) && minutes > 0 ? Math.round(minutes * 60) : 0;
+      parseTimePart(values.hours) * 3600 +
+      parseTimePart(values.minutes, 59) * 60 +
+      parseTimePart(values.seconds, 59);
 
     if (!existsSync(OVERLAY_BINARY)) {
       await showToast({
@@ -112,7 +131,7 @@ export default function Command() {
     await closeMainWindow({ clearRootSearch: true });
     await showHUD(
       seconds > 0
-        ? `🟢 Tunnel vision: ${goal} (${minutes}m)`
+        ? `🟢 Tunnel vision: ${goal} (${formatDuration(seconds)})`
         : `🟢 Tunnel vision: ${goal}`,
     );
     await popToRoot();
@@ -135,12 +154,10 @@ export default function Command() {
         placeholder="What are you locking in on?"
         autoFocus
       />
-      <Form.TextField
-        id="minutes"
-        title="Timer (minutes)"
-        placeholder="Optional — e.g. 25"
-      />
-      <Form.Description text="A glowing green HUD pins your goal to the top of the screen until you stop Tunnel Vision." />
+      <Form.TextField id="hours" title="Timer" placeholder="Hours" />
+      <Form.TextField id="minutes" placeholder="Minutes (0–59)" />
+      <Form.TextField id="seconds" placeholder="Seconds (0–59)" />
+      <Form.Description text="Optional countdown — leave the timer blank for a goal-only HUD. Minutes and seconds clamp to 0–59. A glowing green HUD pins your goal to the top of the screen until you stop Tunnel Vision." />
       <Form.Separator />
       {TIME_UP_EFFECTS.map((effect, index) => {
         const conflictsWith = disabled.get(effect.id);
