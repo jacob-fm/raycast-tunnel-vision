@@ -15,7 +15,40 @@
       "title": "Start Tunnel Vision",
       "subtitle": "Tunnel Vision",
       "description": "Enter a goal and an optional timer, then engage the focus overlay.",
-      "mode": "view"
+      "mode": "view",
+      "preferences": [
+        {
+          "name": "defaultColorEffect",
+          "title": "Default Time's-Up Color",
+          "description": "Which color flash to enable by default when the timer ends. Red and blue are mutually exclusive.",
+          "type": "dropdown",
+          "required": false,
+          "default": "none",
+          "data": [
+            {
+              "title": "None",
+              "value": "none"
+            },
+            {
+              "title": "Flash red",
+              "value": "red"
+            },
+            {
+              "title": "Flash blue",
+              "value": "blue"
+            }
+          ]
+        },
+        {
+          "name": "defaultZoom",
+          "title": "Default Time's-Up Zoom",
+          "label": "Zoom to fill the screen when the timer ends",
+          "description": "Enable the zoom effect by default.",
+          "type": "checkbox",
+          "required": false,
+          "default": false
+        }
+      ]
     },
     {
       "name": "place-tunnel-vision",

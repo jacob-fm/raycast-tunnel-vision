@@ -13,8 +13,8 @@ import {
 } from "./overlay";
 
 // Jump straight into the on-screen placement preview, previewing the last-used goal
-// and timer. Drag to move, drag the handle to resize, Enter to save (Esc cancels),
-// then run Start Tunnel Vision to launch the HUD at the saved spot.
+// and timer. Drag to move, drag the handle to resize, Enter to save / ⌘Enter to save
+// as the default (Esc cancels), then run Start Tunnel Vision to launch at that spot.
 export default async function Command() {
   let goal = "Focus";
   let sampleSeconds = 0;
@@ -42,5 +42,7 @@ export default async function Command() {
   }
 
   await closeMainWindow({ clearRootSearch: true });
-  await showHUD("Drag to position · drag the handle to resize · Enter to save");
+  await showHUD(
+    "Drag to position · resize with the handle · Enter to save · ⌘Enter to save as default",
+  );
 }

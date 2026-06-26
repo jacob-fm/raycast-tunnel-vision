@@ -3,12 +3,24 @@
 
 import { environment } from "@raycast/api";
 import { spawn } from "child_process";
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "fs";
+import {
+  chmodSync,
+  existsSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "fs";
 import { join } from "path";
 
 export const PID_FILE = join(environment.supportPath, "overlay.pid");
 export const PLACE_PID_FILE = join(environment.supportPath, "placement.pid");
+// Active placement (plain Return) vs the saved default placement (⌘Return). On
+// launch the active one wins, falling back to the default, then the built-in spot.
 export const PLACEMENT_FILE = join(environment.supportPath, "placement.json");
+export const DEFAULT_PLACEMENT_FILE = join(
+  environment.supportPath,
+  "default-placement.json",
+);
 export const OVERLAY_BINARY = join(
   environment.assetsPath,
   "tunnelvision-overlay",
@@ -66,12 +78,11 @@ export function stopPlacementOverlay() {
   killByPidFile(PLACE_PID_FILE);
 }
 
-// Read the saved placement (if any) as the "centerX,centerY,fontSize" argument the
-// overlay expects, or "" when none has been set.
-export function readPlacementArg(): string {
+// "centerX,centerY,fontSize" from a placement file, or "" if missing/invalid.
+function placementArgFrom(file: string): string {
   try {
-    if (!existsSync(PLACEMENT_FILE)) return "";
-    const p = JSON.parse(readFileSync(PLACEMENT_FILE, "utf8"));
+    if (!existsSync(file)) return "";
+    const p = JSON.parse(readFileSync(file, "utf8"));
     if (
       typeof p?.centerX === "number" &&
       typeof p?.centerY === "number" &&
@@ -83,6 +94,25 @@ export function readPlacementArg(): string {
     // ignore corrupt/missing placement
   }
   return "";
+}
+
+// The placement argument for launching the HUD: the active placement wins, falling
+// back to the saved default, then "" (the overlay's built-in top-center spot).
+export function readPlacementArg(): string {
+  return (
+    placementArgFrom(PLACEMENT_FILE) ||
+    placementArgFrom(DEFAULT_PLACEMENT_FILE) ||
+    ""
+  );
+}
+
+// Revert to the default placement by dropping the active one (used by Reset).
+export function resetActivePlacement() {
+  try {
+    if (existsSync(PLACEMENT_FILE)) unlinkSync(PLACEMENT_FILE);
+  } catch {
+    // ignore — best effort
+  }
 }
 
 // Launch the overlay in interactive placement mode, previewing `goal` (and a sample
@@ -101,7 +131,13 @@ export function launchPlacementMode(goal: string, sampleSeconds: number) {
 
   const child = spawn(
     OVERLAY_BINARY,
-    ["place", PLACEMENT_FILE, goal.trim() || "Focus", String(sampleSeconds)],
+    [
+      "place",
+      PLACEMENT_FILE,
+      DEFAULT_PLACEMENT_FILE,
+      goal.trim() || "Focus",
+      String(sampleSeconds),
+    ],
     { detached: true, stdio: "ignore" },
   );
   child.unref();

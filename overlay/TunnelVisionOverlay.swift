@@ -35,7 +35,7 @@ let effectIds: [String] =
 let placement = arguments.count > 6 ? parsePlacement(arguments[6]) : nil
 
 // Place mode is a distinct subcommand:
-//   tunnelvision-overlay place <outputPath> <goal> <sampleSeconds> <deeplink>
+//   tunnelvision-overlay place <activePath> <defaultPath> <goal> <sampleSeconds>
 let isPlaceMode = arguments.count > 1 && arguments[1] == "place"
 
 // MARK: - Small math helpers
@@ -323,7 +323,8 @@ final class PlacementView: NSView {
     var center = NSPoint.zero
     var fontSize: CGFloat = 30 { didSet { hud.font = tunnelVisionFont(ofSize: fontSize) } }
     var saved = false // briefly shown after confirming, before the window closes
-    var onConfirm: (() -> Void)?
+    var savedAsDefault = false // whether the save was ⌘Return ("save as default")
+    var onConfirm: ((_ asDefault: Bool) -> Void)? // asDefault = ⌘Return
     var onCancel: (() -> Void)?
 
     private let hud = GlyphHUDView(frame: .zero) // used purely as a drawing helper
@@ -376,10 +377,15 @@ final class PlacementView: NSView {
         NSBezierPath(ovalIn: handleRect()).fill()
 
         // Instructions (or the post-confirm message) pinned near the bottom of the screen.
-        let hint =
-            saved
-            ? "✓  Placement saved — reopen Tunnel Vision and press Enter to start"
-            : "Drag to move   ·   drag the handle to resize   ·   Enter to confirm   ·   Esc to cancel"
+        let hint: String
+        if saved {
+            hint =
+                (savedAsDefault ? "✓  Saved as default" : "✓  Placement saved")
+                + " — reopen Tunnel Vision to start"
+        } else {
+            hint =
+                "Drag to move   ·   drag to resize   ·   Enter to save   ·   ⌘Enter to save as default   ·   Esc to cancel"
+        }
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 14, weight: saved ? .semibold : .medium),
             .foregroundColor: saved
@@ -429,7 +435,7 @@ final class PlacementView: NSView {
 
     override func keyDown(with event: NSEvent) {
         switch event.keyCode {
-        case 36, 76: onConfirm?() // Return / keypad Enter
+        case 36, 76: onConfirm?(event.modifierFlags.contains(.command)) // ⌘Enter = save as default
         case 53: onCancel?() // Escape
         default: super.keyDown(with: event)
         }
@@ -439,10 +445,12 @@ final class PlacementView: NSView {
 final class PlacementController {
     let window: KeyableWindow
     let view: PlacementView
-    let outputPath: String
+    let outputPath: String // active placement (Return)
+    let defaultOutputPath: String // default placement (⌘Return)
 
-    init(goal: String, timeText: String?, outputPath: String) {
+    init(goal: String, timeText: String?, outputPath: String, defaultOutputPath: String) {
         self.outputPath = outputPath
+        self.defaultOutputPath = defaultOutputPath
 
         let screen = NSScreen.main ?? NSScreen.screens.first!
         let frame = screen.frame
@@ -458,14 +466,15 @@ final class PlacementController {
 
         view = PlacementView(frame: NSRect(origin: .zero, size: frame.size), goal: goal, timeText: timeText)
         view.autoresizingMask = [.width, .height]
-        if let existing = loadPlacementFile(outputPath) {
+        // Resume from the active placement, then the default, then the built-in spot.
+        if let existing = loadPlacementFile(outputPath) ?? loadPlacementFile(defaultOutputPath) {
             view.fontSize = existing.fontSize
             view.center = NSPoint(x: existing.centerX, y: existing.centerY)
         } else {
             view.fontSize = 30
             view.center = NSPoint(x: frame.midX, y: frame.maxY - 122) // the default HUD spot
         }
-        view.onConfirm = { [weak self] in self?.confirm() }
+        view.onConfirm = { [weak self] asDefault in self?.confirm(asDefault: asDefault) }
         view.onCancel = { exit(0) }
         window.contentView = view
 
@@ -474,14 +483,19 @@ final class PlacementController {
         window.makeFirstResponder(view)
     }
 
-    private func confirm() {
+    private func confirm(asDefault: Bool) {
         guard !view.saved else { return } // ignore repeat keypresses while closing
         let json = "{\"centerX\":\(view.center.x),\"centerY\":\(view.center.y),\"fontSize\":\(view.fontSize)}"
+        // Plain Return saves the active placement; ⌘Return also writes it as the default.
         try? json.write(toFile: outputPath, atomically: true, encoding: .utf8)
+        if asDefault {
+            try? json.write(toFile: defaultOutputPath, atomically: true, encoding: .utf8)
+        }
 
         // Briefly confirm on screen, then close. (The user reopens Tunnel Vision to
         // start — their in-progress form values are restored from local storage.)
         view.saved = true
+        view.savedAsDefault = asDefault
         view.needsDisplay = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { exit(0) }
     }
@@ -679,15 +693,18 @@ app.setActivationPolicy(.accessory) // no Dock icon, never steals focus
 var retainedController: AnyObject?
 
 if isPlaceMode {
+    // place <activePath> <defaultPath> <goal> <sampleSeconds>
     let outputPath = arguments.count > 2 ? arguments[2] : ""
-    let placeGoal = arguments.count > 3 ? arguments[3] : "Focus"
-    let sampleSeconds = arguments.count > 4 ? (Double(arguments[4]) ?? 0) : 0
+    let defaultOutputPath = arguments.count > 3 ? arguments[3] : ""
+    let placeGoal = arguments.count > 4 ? arguments[4] : "Focus"
+    let sampleSeconds = arguments.count > 5 ? (Double(arguments[5]) ?? 0) : 0
     let total = Int(sampleSeconds.rounded())
     let sampleTime = total > 0 ? String(format: "%02d:%02d", total / 60, total % 60) : nil
     retainedController = PlacementController(
         goal: placeGoal.isEmpty ? "Focus" : placeGoal,
         timeText: sampleTime,
-        outputPath: outputPath
+        outputPath: outputPath,
+        defaultOutputPath: defaultOutputPath
     )
 } else {
     retainedController = OverlayController(

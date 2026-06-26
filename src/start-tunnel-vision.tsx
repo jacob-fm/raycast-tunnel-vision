@@ -5,6 +5,7 @@ import {
   Icon,
   LocalStorage,
   closeMainWindow,
+  getPreferenceValues,
   popToRoot,
   showHUD,
   showToast,
@@ -22,6 +23,7 @@ import {
   launchPlacementMode,
   parseTimePart,
   readPlacementArg,
+  resetActivePlacement,
   stopExistingOverlay,
   stopPlacementOverlay,
 } from "./overlay";
@@ -32,6 +34,26 @@ const INACTIVITY_THRESHOLD = 0.5;
 // Hot-zone padding (points around the HUD that count as "near"). Passed
 // positionally to the overlay so the effects argument can follow it.
 const NEAR_MARGIN = 90;
+
+interface Preferences {
+  defaultColorEffect: "none" | "red" | "blue";
+  defaultZoom: boolean;
+}
+
+// The effect toggles implied by the configured defaults. Goal and timer have no
+// defaults — they're considered fresh every session.
+function defaultEnabledEffects(): Record<string, boolean> {
+  const prefs = getPreferenceValues<Preferences>();
+  const enabled: Record<string, boolean> = {};
+  if (
+    prefs.defaultColorEffect === "red" ||
+    prefs.defaultColorEffect === "blue"
+  ) {
+    enabled[prefs.defaultColorEffect] = true;
+  }
+  if (prefs.defaultZoom) enabled.zoom = true;
+  return enabled;
+}
 
 interface FormValues {
   goal: string;
@@ -79,7 +101,12 @@ export default function Command() {
   useEffect(() => {
     (async () => {
       const raw = await LocalStorage.getItem<string>(LAST_VALUES_KEY);
-      if (!raw) return;
+      // No last session yet → start from the configured defaults (effects only;
+      // goal and timer are always considered fresh, so they stay blank).
+      if (!raw) {
+        setEnabled(defaultEnabledEffects());
+        return;
+      }
       try {
         const stored = JSON.parse(raw) as Partial<StoredValues>;
         setGoal(stored.goal ?? "");
@@ -90,7 +117,7 @@ export default function Command() {
           Object.fromEntries((stored.effects ?? []).map((id) => [id, true])),
         );
       } catch {
-        // Ignore corrupt storage and start blank.
+        setEnabled(defaultEnabledEffects());
       }
     })();
   }, []);
@@ -105,15 +132,18 @@ export default function Command() {
   );
   const incompatible = disabledEffects(selected);
 
-  // Reset every field back to empty.
-  function clearFields() {
+  // Reset the form to defaults: effects to the configured defaults, goal/timer
+  // blank, and the HUD placement back to the saved default (drops the active one).
+  async function resetToDefaults() {
     setGoal("");
     setHours("");
     setMinutes("");
     setSeconds("");
-    setEnabled({});
+    setEnabled(defaultEnabledEffects());
     setMinutesError(undefined);
     setSecondsError(undefined);
+    resetActivePlacement();
+    await showToast({ style: Toast.Style.Success, title: "Reset to defaults" });
   }
 
   // Why an effect is unavailable (undefined = available). A timer is required;
@@ -160,7 +190,7 @@ export default function Command() {
 
     await closeMainWindow({ clearRootSearch: true });
     await showHUD(
-      "Drag to position · drag the handle to resize · Enter to save, then reopen Tunnel Vision",
+      "Drag to position · resize with the handle · Enter to save · ⌘Enter to save as default",
     );
   }
 
@@ -267,10 +297,10 @@ export default function Command() {
             onAction={handleConfigurePlacement}
           />
           <Action
-            title="Clear All Fields"
-            icon={Icon.Trash}
+            title="Reset to Defaults"
+            icon={Icon.ArrowCounterClockwise}
             shortcut={{ modifiers: ["cmd", "shift"], key: "x" }}
-            onAction={clearFields}
+            onAction={resetToDefaults}
           />
         </ActionPanel>
       }
