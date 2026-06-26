@@ -6,7 +6,7 @@ A Raycast extension that helps you lock onto a single goal. When you start a ses
 
 - **Start Tunnel Vision** — enter a goal and an optional timer (in minutes). A neon-green HUD appears near the top-center of your screen showing `Goal · MM:SS`.
 - **Stop Tunnel Vision** — dismisses the HUD.
-- **Smart transparency** — the HUD fades to fully transparent _only while your cursor is near it and actively moving_, so you can interact with whatever is underneath. If the cursor goes still for more than 0.5s (tunable), the HUD snaps back to full opacity even while you hover.
+- **Smart transparency** — the HUD's solid text fades out _only while your cursor is near it and actively moving_, so you can interact with whatever is underneath. While faded it leaves a dashed light-grey outline of the text, so your goal stays faintly legible. If the cursor goes still for more than 0.5s (tunable), the HUD snaps back to full opacity even while you hover.
 - **Time's-up effects** — opt into one or more visual effects that fire when the countdown reaches zero:
   - **Flash the text red** — fades the HUD from neon green to alarm red.
   - **Flash the text blue** — fades the HUD from neon green to electric blue. (Incompatible with red.)

@@ -1,11 +1,13 @@
 import AppKit
+import CoreText
 
 // Tunnel Vision overlay helper.
 //
 // Draws a borderless, always-on-top, click-through HUD near the top-center of the
-// main screen showing the current goal and an optional countdown. The HUD fades to
-// transparent when the cursor is near it AND actively moving, and snaps back to full
-// opacity once the cursor leaves the area or goes still for longer than the
+// main screen showing the current goal and an optional countdown. When the cursor is
+// near it AND actively moving, the solid glowing text fades out — leaving a dashed
+// light-grey outline of the text so the goal stays faintly legible — and snaps back
+// to full opacity once the cursor leaves the area or goes still for longer than the
 // inactivity threshold.
 //
 // When the countdown reaches zero, an optional set of "time's up" visual effects
@@ -129,9 +131,100 @@ func makeEffect(id: String) -> TimeUpEffect? {
     }
 }
 
+// MARK: - HUD rendering
+//
+// Draws the HUD text by stroking/filling the actual glyph outlines, which lets the
+// fill cross-fade independently of a dashed "ghost" outline. `visibility` is the
+// fade level (1 = solid glowing text, 0 = faded): as the filled text fades out when
+// the cursor reaches for the HUD, a dashed light-grey outline of the same text fades
+// in, so the goal stays faintly legible instead of vanishing entirely.
+
+final class GlyphHUDView: NSView {
+    var text = ""
+    var font = NSFont.monospacedSystemFont(ofSize: 30, weight: .heavy)
+    var fillColor = NSColor.green
+    var glowColor = NSColor.green
+    var glowRadius: CGFloat = 14
+    var visibility: CGFloat = 1
+
+    private let kern: CGFloat = 1.5
+
+    // Build a single CGPath containing every glyph of `text`, laid out on one line.
+    private func glyphPath() -> CGPath? {
+        guard !text.isEmpty else { return nil }
+        let attributed = NSAttributedString(string: text, attributes: [.font: font, .kern: kern])
+        let line = CTLineCreateWithAttributedString(attributed)
+        let path = CGMutablePath()
+        for runAny in CTLineGetGlyphRuns(line) as NSArray {
+            let run = runAny as! CTRun
+            let attrs = CTRunGetAttributes(run) as NSDictionary
+            let runFontValue = attrs[kCTFontAttributeName as String]
+            let runFont = runFontValue != nil ? (runFontValue as! CTFont) : (font as CTFont)
+            let count = CTRunGetGlyphCount(run)
+            guard count > 0 else { continue }
+            var glyphs = [CGGlyph](repeating: 0, count: count)
+            var positions = [CGPoint](repeating: .zero, count: count)
+            CTRunGetGlyphs(run, CFRange(location: 0, length: count), &glyphs)
+            CTRunGetPositions(run, CFRange(location: 0, length: count), &positions)
+            for i in 0..<count {
+                guard let glyph = CTFontCreatePathForGlyph(runFont, glyphs[i], nil) else { continue }
+                let transform = CGAffineTransform(translationX: positions[i].x, y: positions[i].y)
+                path.addPath(glyph, transform: transform)
+            }
+        }
+        return path.isEmpty ? nil : path
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let ctx = NSGraphicsContext.current?.cgContext, let path = glyphPath() else { return }
+
+        // Center the glyph path within the view.
+        let box = path.boundingBoxOfPath
+        ctx.saveGState()
+        ctx.translateBy(
+            x: (bounds.width - box.width) / 2 - box.minX,
+            y: (bounds.height - box.height) / 2 - box.minY
+        )
+
+        // Solid, glowing fill + thin black outline — fades out as the HUD ghosts.
+        if visibility > 0.001 {
+            ctx.saveGState()
+            ctx.setShadow(
+                offset: .zero,
+                blur: glowRadius,
+                color: glowColor.withAlphaComponent(0.95 * visibility).cgColor
+            )
+            ctx.addPath(path)
+            ctx.setFillColor(fillColor.withAlphaComponent(visibility).cgColor)
+            ctx.fillPath()
+            ctx.restoreGState()
+
+            ctx.addPath(path)
+            ctx.setLineWidth(font.pointSize * 0.03) // matches the old strokeWidth: -3
+            ctx.setStrokeColor(NSColor.black.withAlphaComponent(0.85 * visibility).cgColor)
+            ctx.setLineJoin(.round)
+            ctx.strokePath()
+        }
+
+        // Dashed light-grey ghost outline — fades in as the fill fades out.
+        let ghost = 1 - visibility
+        if ghost > 0.001 {
+            let dash = font.pointSize * 0.12
+            ctx.addPath(path)
+            ctx.setLineDash(phase: 0, lengths: [dash, dash * 0.7])
+            ctx.setLineWidth(max(1, font.pointSize * 0.02))
+            ctx.setLineJoin(.round)
+            ctx.setStrokeColor(NSColor(white: 0.82, alpha: ghost).cgColor)
+            ctx.strokePath()
+        }
+
+        ctx.restoreGState()
+    }
+}
+
 final class OverlayController {
     let window: NSWindow
-    let label: NSTextField
+    let hudView: GlyphHUDView
     let goal: String
     let endDate: Date?
     let inactivityThreshold: TimeInterval
@@ -192,24 +285,9 @@ final class OverlayController {
         window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
         window.isReleasedWhenClosed = false
 
-        let container = NSView(frame: NSRect(origin: .zero, size: baseFrame.size))
-        label = NSTextField(labelWithString: "")
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.isEditable = false
-        label.isSelectable = false
-        label.drawsBackground = false
-        label.isBezeled = false
-        label.alignment = .center
-        label.maximumNumberOfLines = 1
-        label.lineBreakMode = .byTruncatingTail
-        container.addSubview(label)
-        NSLayoutConstraint.activate([
-            label.centerXAnchor.constraint(equalTo: container.centerXAnchor),
-            label.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-            label.leadingAnchor.constraint(greaterThanOrEqualTo: container.leadingAnchor, constant: 16),
-            label.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -16),
-        ])
-        window.contentView = container
+        hudView = GlyphHUDView(frame: NSRect(origin: .zero, size: baseFrame.size))
+        hudView.autoresizingMask = [.width, .height] // stays centered when an effect resizes the window
+        window.contentView = hudView
 
         render()
         window.orderFrontRegardless()
@@ -261,33 +339,22 @@ final class OverlayController {
             window.setFrame(style.frame, display: true)
         }
 
-        let glow = NSShadow()
-        glow.shadowColor = style.glowColor
+        hudView.text = displayString()
+        hudView.font = NSFont.monospacedSystemFont(ofSize: style.fontSize, weight: .heavy)
+        hudView.fillColor = style.textColor
+        hudView.glowColor = style.glowColor
         // Scale the glow with the font so it stays proportional when zoomed.
-        glow.shadowBlurRadius = (14 + 6 * sin(pulse)) * (style.fontSize / context.baseFontSize)
-        glow.shadowOffset = .zero
-
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.alignment = .center
-
-        let attrs: [NSAttributedString.Key: Any] = [
-            .foregroundColor: style.textColor,
-            .font: NSFont.monospacedSystemFont(ofSize: style.fontSize, weight: .heavy),
-            .shadow: glow,
-            .strokeColor: NSColor.black.withAlphaComponent(0.85),
-            .strokeWidth: -3.0, // negative = fill + outline (legibility on any backdrop)
-            .paragraphStyle: paragraph,
-            .kern: 1.5,
-        ]
-        label.attributedStringValue = NSAttributedString(string: displayString(), attributes: attrs)
+        hudView.glowRadius = (14 + 6 * sin(pulse)) * (style.fontSize / context.baseFontSize)
+        hudView.visibility = currentAlpha
+        hudView.needsDisplay = true
     }
 
     private func tick() {
         pulse += 0.12
 
         // Advance (or hold) the time's-up ramp.
-        let target: CGFloat = isTimeUp() ? 1 : 0
-        timeUpProgress += (target - timeUpProgress) * 0.06
+        let timeUp = isTimeUp()
+        timeUpProgress += ((timeUp ? 1 : 0) - timeUpProgress) * 0.06
 
         let mouse = NSEvent.mouseLocation
         let dx = mouse.x - lastMouse.x
@@ -303,10 +370,13 @@ final class OverlayController {
         let near = hotZone.contains(mouse)
         let active = Date().timeIntervalSince(lastMoveTime) <= inactivityThreshold
 
-        // Fade away only while the cursor is near AND being actively moved.
-        let alphaTarget: CGFloat = (near && active) ? 0.0 : 1.0
+        // Fade the filled text away only while the cursor is near AND being actively
+        // moved. The window itself stays opaque so the dashed ghost outline (drawn by
+        // GlyphHUDView as `visibility` drops) remains visible underneath the cursor.
+        // Once time's up, the HUD stays fully solid and refuses to fade — you can't
+        // dismiss it by reaching for it anymore.
+        let alphaTarget: CGFloat = (!timeUp && near && active) ? 0.0 : 1.0
         currentAlpha += (alphaTarget - currentAlpha) * 0.25 // smooth easing
-        window.alphaValue = currentAlpha
 
         render()
     }
