@@ -4,9 +4,12 @@
   "title": "Tunnel Vision",
   "description": "Lock onto a single goal. A deliberately obtrusive, glowing green focus HUD pins your goal (and an optional countdown) to the top of your screen — and gets out of the way only when you actively reach for it.",
   "icon": "extension-icon.png",
-  "author": "jacob",
+  "author": "jacob-fm",
   "categories": [
     "Productivity"
+  ],
+  "platforms": [
+    "macOS"
   ],
   "license": "MIT",
   "commands": [
